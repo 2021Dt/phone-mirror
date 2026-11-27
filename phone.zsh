@@ -6,7 +6,7 @@ function phone {
 
     local usage='用法：phone [投屏选项] | phone usb [序列号] [投屏选项]
       phone -s 序列号 [投屏选项] | phone list | phone update | phone -h
-      phone send [Mac文件] | phone get [手机文件] [--to Mac目录]（可在子命令前加 -s 序列号）
+      phone send [Mac文件 ...] | phone get [手机文件 ...] [--to Mac目录]（可在子命令前加 -s 序列号）
       phone folder [Mac目录 | --reset]
       投屏选项：-S / --screen-off、--screen-on、--keyboard=sdk / --keyboard=uhid
                 --screen-off-timeout=秒数 或 --keep-active
@@ -36,8 +36,8 @@ function phone {
 
 命令
   phone                             自动选手机，默认熄屏、不因空闲休眠、实体键盘
-  phone send                        在 Mac 上选一个文件，发送到手机「下载」
-  phone get                         从手机取文件，保存到选好的 Mac 目录（初始为「下载」）
+  phone send                        在 Mac 上选择一个或多个文件，发送到手机「下载」
+  phone get                         从手机选择一个或多个文件，保存到 Mac 接收目录
   phone folder                      为以后的下载选一个 Mac 文件夹，无需连接手机
   phone list                        查看 ADB 设备列表和序列号
   phone update                      通过 Homebrew 检查并更新 scrcpy，无需连接手机
@@ -51,8 +51,8 @@ function phone {
   brew update && brew upgrade 2021dt/phone-mirror/phone-mirror
 
 常用示例（在终端输入）
-  phone send ~/Downloads/报告.pdf   直接发送文件，也可以输入 phone send 后拖入文件
-  phone get 报告.pdf                直接取回手机「下载」里的这个文件
+  phone send 报告.pdf 照片.jpg      一次发送多个文件，也可以从 Finder 拖入
+  phone get 报告.pdf 照片.jpg       一次取回手机「下载」里的多个文件
                                     传文件遇到同名时，新副本会自动加编号
   phone get --to .                  只把这次选的文件存到当前目录
   phone folder --reset              恢复 Mac 默认的「下载」目录
@@ -73,6 +73,7 @@ function phone {
   ⌘2  (Command+2)                  打开最近任务，点击卡片即可切换 App
   ⌘U  (Command+U)                  从 Mac 选文件，发送到当前手机的「下载」
   ⌘D  (Command+D)                  从当前手机选文件，取回 Mac
+                                    在文件列表中按住 ⌘ 点选多个，按住 Shift 连选
   ⌘,  (Command+逗号)               选择并记住 Mac 接收文件的目录
   Option+O                         熄灭手机屏幕，继续投屏
   Option+Shift+O                   点亮手机屏幕
@@ -156,23 +157,29 @@ function phone {
             shift
             /bin/zsh -f "$script_dir/phone-transfer.zsh" folder "$@"
             return $? ;;
-        send)
-            (( $# == 1 || $# == 2 )) && [[ $# == 1 || -n $2 ]] || { print -ru2 -- "$usage"; return 2; } ;;
-        get)
-            local get_file= get_folder=
+        send|get)
+            local -a transfer_files
+            local get_folder=
+            local parse_options=yes
             shift
             while (( $# )); do
-                if [[ $1 == --to ]]; then
-                    [[ -n $2 && -z $get_folder ]] || { print -ru2 -- '用法：phone get [手机文件] --to Mac目录'; return 2; }
+                if [[ $mode == get && $parse_options == yes && $1 == --to ]]; then
+                    [[ -n $2 && -z $get_folder ]] || { print -ru2 -- "$usage"; return 2; }
                     get_folder=$2
                     shift 2
+                elif [[ $parse_options == yes && $1 == -- ]]; then
+                    parse_options=no
+                    shift
                 else
-                    [[ -n $1 && -z $get_file ]] || { print -ru2 -- "$usage"; return 2; }
-                    get_file=$1
+                    [[ -n $1 ]] || { print -ru2 -- "$usage"; return 2; }
+                    transfer_files+=("$1")
                     shift
                 fi
             done
-            set -- "$mode" "$get_file" "$get_folder" ;;
+            set -- "$mode" "${transfer_files[@]}"
+            if [[ $mode == get ]]; then
+                set -- "$mode" --to "$get_folder" "${transfer_files[@]}"
+            fi ;;
         usb)
             [[ $# -le 2 && $2 != -* ]] || { print -ru2 -- "$usage"; return 2; }
             requested=$2 ;;

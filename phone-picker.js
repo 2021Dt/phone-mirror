@@ -25,12 +25,36 @@ function readDirectory(listingPath) {
     return entries;
 }
 
-function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
+function writeSelection(selectionPath, paths) {
+    const records = paths.length ? paths.join("\0") + "\0" : "";
+    if (!$(records).writeToFileAtomicallyEncodingError(selectionPath, true, $.NSUTF8StringEncoding, $()))
+        throw new Error("无法保存所选文件列表。");
+}
+
+function chooseMacFiles() {
+    ObjC.import("AppKit");
+    const application = $.NSApplication.sharedApplication;
+    application.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
+    const panel = $.NSOpenPanel.openPanel;
+    panel.canChooseFiles = true;
+    panel.canChooseDirectories = false;
+    panel.allowsMultipleSelection = true;
+    panel.message = "选择发送到手机「下载」的文件，可按 ⌘ 或 Shift 多选。";
+    panel.prompt = "发送";
+    application.activateIgnoringOtherApps(true);
+    if (Number(panel.runModal) !== Number($.NSModalResponseOK)) return [];
+    const urls = panel.URLs;
+    const paths = [];
+    for (let i = 0; i < urls.count; i++) paths.push(ObjC.unwrap(urls.objectAtIndex(i).path));
+    return paths;
+}
+
+function choosePhoneFiles(adbPath, serial, workerPath, listingPath) {
     ObjC.import("AppKit");
     const application = $.NSApplication.sharedApplication;
     application.setActivationPolicy($.NSApplicationActivationPolicyAccessory);
     const root = "/sdcard/";
-    let directory = root + "Download/", entries = [], selectedFile = "";
+    let directory = root + "Download/", entries = [], selectedFiles = [];
     let pending = null, timer = null, retryDirectory = "";
 
     const rect = $.NSMakeRect;
@@ -66,6 +90,7 @@ function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
     const table = $.NSTableView.alloc.initWithFrame(rect(0, 0, 492, 255));
     table.headerView = $();
     table.usesAlternatingRowBackgroundColors = true;
+    table.allowsMultipleSelection = true;
     table.rowHeight = 25;
     const column = $.NSTableColumn.alloc.initWithIdentifier("name");
     column.width = 480;
@@ -77,13 +102,32 @@ function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
     scroll.documentView = table;
     window.contentView.addSubview(scroll);
 
+    function selection() {
+        const indexes = table.selectedRowIndexes;
+        const files = [];
+        let folder = null;
+        for (let row = indexes.firstIndex; row < entries.length; row = indexes.indexGreaterThanIndex(row)) {
+            const entry = entries[row];
+            if (entry.kind === "F") files.push(directory + entry.name);
+            else folder = entry;
+        }
+        return { files: files, folder: folder, count: Number(indexes.count) };
+    }
     function updateControls() {
-        const entry = entries[table.selectedRow];
+        const selected = selection();
+        const singleFolder = selected.count === 1 && selected.folder;
         up.enabled = !pending && directory !== root;
         table.enabled = !pending;
-        primary.enabled = !pending && Boolean(entry || retryDirectory);
-        primary.title = entry ? (entry.kind === "D" ? "打开文件夹" : "下载") :
-            (retryDirectory ? "重试" : "选择");
+        primary.enabled = !pending && Boolean(selected.files.length || singleFolder || (!selected.count && retryDirectory));
+        primary.title = selected.files.length > 1 ? "下载 " + selected.files.length + " 项" :
+            selected.files.length ? "下载" : singleFolder ? "打开文件夹" : (!selected.count && retryDirectory ? "重试" : "选择");
+        if (!pending && !retryDirectory) {
+            if (selected.folder && selected.files.length)
+                status.stringValue = "将下载选中的文件，跳过文件夹。";
+            else if (selected.folder && selected.count > 1)
+                status.stringValue = "双击文件夹进入，再选择要下载的文件。";
+            else status.stringValue = entries.length ? "双击打开，按 ⌘ 或 Shift 可多选文件。" : "这个文件夹是空的。";
+        }
     }
     function loadDirectory(path) {
         if (pending) return;
@@ -130,7 +174,6 @@ function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
             if (entries.length) table.scrollRowToVisible(0);
             location.stringValue = directory;
             location.toolTip = directory;
-            status.stringValue = entries.length ? "双击文件夹进入，双击文件下载。" : "这个文件夹是空的。";
             status.toolTip = "";
             window.makeFirstResponder(table);
         } catch (error) {
@@ -140,16 +183,9 @@ function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
         }
         updateControls();
     }
-    function openEntry(entry) {
-        if (pending) return;
-        if (!entry) {
-            if (retryDirectory) loadDirectory(retryDirectory);
-        } else if (entry.kind === "D") {
-            loadDirectory(directory + entry.name + "/");
-        } else {
-            selectedFile = directory + entry.name;
-            application.stopModalWithCode(1);
-        }
+    function finish(files) {
+        selectedFiles = files;
+        application.stopModalWithCode(1);
     }
     ObjC.registerSubclass({
         name: "PhoneFileRows", superclass: "NSObject",
@@ -161,11 +197,17 @@ function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
             },
             "tableViewSelectionDidChange:": { implementation: updateControls },
             "openSelection:": { types: ["void", ["id"]], implementation: function () {
-                openEntry(entries[table.selectedRow]);
+                if (pending) return;
+                const selected = selection();
+                if (selected.files.length) finish(selected.files);
+                else if (selected.count === 1 && selected.folder) loadDirectory(directory + selected.folder.name + "/");
+                else if (!selected.count && retryDirectory) loadDirectory(retryDirectory);
             } },
             "openRow:": { types: ["void", ["id"]], implementation: function (view) {
                 const entry = entries[view.clickedRow];
-                if (entry) openEntry(entry);
+                if (pending || !entry) return;
+                if (entry.kind === "D") loadDirectory(directory + entry.name + "/");
+                else finish([directory + entry.name]);
             } },
             "goUp:": { types: ["void", ["id"]], implementation: function () {
                 if (directory !== root) loadDirectory(directory.replace(/[^/]+\/$/, ""));
@@ -197,7 +239,7 @@ function choosePhoneFile(adbPath, serial, workerPath, listingPath) {
     window.makeKeyAndOrderFront($());
     try {
         const response = application.runModalForWindow(window);
-        return Number(response) === 1 ? selectedFile : "";
+        return Number(response) === 1 ? selectedFiles : [];
     } finally {
         if (timer) timer.invalidate;
         if (pending && pending.task.running) pending.task.terminate;
@@ -224,11 +266,13 @@ function run(args) {
         if (args[0] === "folder" && args.length === 1) {
             return app.chooseFolder({ withPrompt: "以后从手机下载的文件存到哪个 Mac 文件夹？" }).toString();
         }
-        if (args[0] === "send" && args.length === 1) {
-            return app.chooseFile({ withPrompt: "选择要发送到手机「下载」文件夹的文件" }).toString();
+        if (args[0] === "send" && args.length === 2) {
+            writeSelection(args[1], chooseMacFiles());
+            return "";
         }
-        if (args[0] === "get" && args.length === 5) {
-            return choosePhoneFile(args[1], args[2], args[3], args[4]);
+        if (args[0] === "get" && args.length === 6) {
+            writeSelection(args[5], choosePhoneFiles(args[1], args[2], args[3], args[4]));
+            return "";
         }
         throw new Error("文件选择器参数有误。");
     } catch (error) {

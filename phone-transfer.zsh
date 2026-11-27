@@ -6,7 +6,6 @@ setopt extendedglob
 mode=$1
 adb_bin=$2
 serial=$3
-file=$4
 picker=${0:A:h}/phone-picker.js
 downloads=$HOME/Downloads
 preference=${XDG_CONFIG_HOME:-$HOME/.config}/phone-mirror/download-dir
@@ -21,6 +20,7 @@ choose() { /usr/bin/osascript -l JavaScript "$picker" "$@"; }
 # The open picker starts one short-lived reader per directory. Exec adb so that
 # cancelling the read also stops the process that is talking to the phone.
 if [[ $mode == list ]]; then
+    file=$4
     [[ $# == 4 && $file == /sdcard/* && "/$file/" != */../* ]] || exit 2
     list_command='
         for entry in ./* ./.[!.]* ./..?*; do
@@ -49,6 +49,16 @@ pick_path() {
     REPLY=${REPLY%.}
     REPLY=${REPLY%$'\n'}
     [[ -n $REPLY ]] || exit 0
+}
+pick_files() {
+    local selection_file=$local_stage/selection records
+    : > "$selection_file" || fail '无法创建文件选择清单。'
+    choose "$@" "$selection_file" >/dev/null || fail '文件选择器未能完成。'
+    records=$(< "$selection_file") || fail '无法读取选择的文件。'
+    [[ -n $records ]] || exit 0
+    [[ $records == *$'\0' ]] || fail '文件选择清单不完整，请重试。'
+    records=${records%$'\0'}
+    files=("${(@0)records}")
 }
 cleanup() {
     local result=$?
@@ -93,21 +103,33 @@ case $mode in
         report_success "以后取回的文件会保存到 $folder"
         exit 0 ;;
     send)
-        if [[ -z $file ]]; then
-            pick_path send
-            file=$REPLY
+        shift 3
+        files=("$@")
+        if (( ! $#files )) || [[ $#files == 1 && -z $files[1] ]]; then
+            local_stage=$(/usr/bin/mktemp -d "${TMPDIR:-/tmp}/phone-send.XXXXXXXX") || exit 1
+            pick_files send
         fi
-        [[ -f $file && -r $file ]] || fail "无法读取文件 $file"
-        file=${file:a}
         token=$(/usr/bin/uuidgen) || exit 1
         candidate_stage="$remote_downloads/.phone-send-$token"
-        remote "mkdir -p $remote_downloads && mkdir ${(qq)candidate_stage}" || exit 1
+        remote "mkdir -p $remote_downloads && mkdir ${(qq)candidate_stage}" ||
+            fail '无法在手机的「下载」目录创建临时文件夹。'
         remote_stage=$candidate_stage
-        "$adb_bin" -s "$serial" push "$file" "$remote_stage/payload" || exit 1
         destination=$remote_downloads ;;
     get)
-        if [[ -n $5 ]]; then
-            downloads=${5:a}
+        shift 3
+        if [[ $1 == --to ]]; then
+            (( $# >= 2 )) || fail '缺少保存目录。'
+            chosen_folder=$2
+            shift 2
+            files=("$@")
+        else
+            # Older launchers pass a single file (or empty picker request), then the destination.
+            chosen_folder=$2
+            files=()
+            [[ -z $1 ]] || files+=("$1")
+        fi
+        if [[ -n $chosen_folder ]]; then
+            downloads=${chosen_folder:a}
         elif [[ -e $preference || -L $preference ]]; then
             [[ -f $preference ]] || fail "无法读取保存目录配置：$preference"
             downloads=$(/bin/cat "$preference" && printf '.') || exit 1
@@ -118,59 +140,92 @@ case $mode in
         fi
         check_folder "$downloads"
         local_stage=$(/usr/bin/mktemp -d "$downloads/.phone-get.XXXXXXXX") || exit 1
-        if [[ -z $file ]]; then
-            pick_path get "$adb_bin" "$serial" "${0:A}" "$local_stage/list"
-            file=$REPLY
-        elif [[ $file != /* ]]; then
-            file="$remote_downloads/$file"
+        if (( ! $#files )); then
+            pick_files get "$adb_bin" "$serial" "${0:A}" "$local_stage/list"
         fi
-        [[ $file == (/sdcard/*|/storage/*) && "/$file/" != */../* ]] ||
-            fail '请从手机共享存储选择文件，或输入下载文件夹里的文件名。'
-        remote "test -f ${(qq)file}" || fail "手机上找不到可读取的文件 $file"
-        "$adb_bin" -s "$serial" pull "$file" "$local_stage/payload" || exit 1
-        [[ -f $local_stage/payload ]] || fail '下载未生成普通文件。'
         destination=$downloads ;;
     *) fail '未知的传输方向。' ;;
 esac
 
-name=${file:t}
-stem=$name
-extension=
-if [[ -n ${name:e} && -n ${name:r} ]]; then
-    stem=${name:r}
-    extension=.${name:e}
-fi
-integer copy_number=0
-while true; do
-    output="$destination/$name"
-    if [[ $mode == get ]]; then
-        # link(1) publishes the finished file atomically and never replaces an entry.
-        if /bin/link "$local_stage/payload" "$output" 2>/dev/null; then break; fi
-        # A redirected Downloads folder may be on a volume without hard links.
-        if [[ ! -e $output && ! -L $output ]] &&
-           (setopt noclobber; : > "$output") 2>/dev/null; then
-            /bin/mv -f -- "$local_stage/payload" "$output" && break
-            /bin/rm -f -- "$output"
-            fail "无法保存到 $output"
-        fi
-        [[ -e $output || -L $output ]] || fail "无法保存到 $output"
+transfer_file() {
+    local file=$1 name=${1:t} stem extension= result
+    reason="无法读取文件 $file"
+    if [[ $mode == send ]]; then
+        [[ -f $file && -r $file ]] || return 1
+        reason="未能发送 $file"
+        "$adb_bin" -s "$serial" push "${file:a}" "$remote_stage/payload" || return 1
     else
-        # Shared Android storage may not support hard links. Reserve the final
-        # name with noclobber before replacing our own empty reservation.
-        remote "dst=${(qq)output}; src=${(qq)remote_stage}/payload;"'
-            if [ -e "$dst" ] || [ -L "$dst" ]; then exit 17; fi
-            if (set -C; : > "$dst") 2>/dev/null; then
-                mv -f "$src" "$dst" && exit 0
-                rm -f "$dst"
-                exit 1
-            fi
-            if [ -e "$dst" ] || [ -L "$dst" ]; then exit 17; fi
-            exit 1'
-        result=$?
-        (( result == 0 )) && break
-        (( result == 17 )) || fail "无法保存到手机 $output"
+        [[ $file == /* ]] || file="$remote_downloads/$file"
+        reason="文件不在手机共享存储中：$file"
+        [[ -n $name && $file == (/sdcard/*|/storage/*) && "/$file/" != */../* ]] || return 1
+        reason="手机上找不到可读取的文件 $file"
+        remote "test -f ${(qq)file}" || return 1
+        reason="未能下载 $file"
+        "$adb_bin" -s "$serial" pull "$file" "$payload" && [[ -f $payload ]] || return 1
     fi
-    (( ++copy_number ))
-    name="$stem ($copy_number)$extension"
+
+    stem=$name
+    if [[ -n ${name:e} && -n ${name:r} ]]; then
+        stem=${name:r}
+        extension=.${name:e}
+    fi
+    local -i copy_number=0
+    while true; do
+        output="$destination/$name"
+        reason="无法保存到 $output"
+        if [[ $mode == get ]]; then
+            # Publish atomically; use a noclobber reservation on volumes without hard links.
+            if /bin/link "$payload" "$output" 2>/dev/null; then return 0; fi
+            if [[ ! -e $output && ! -L $output ]] &&
+               (setopt noclobber; : > "$output") 2>/dev/null; then
+                /bin/mv -f -- "$payload" "$output" && return 0
+                /bin/rm -f -- "$output"
+                return 1
+            fi
+            [[ -e $output || -L $output ]] || return 1
+        else
+            # On Android shared storage, reserve the name before moving our finished payload.
+            remote "dst=${(qq)output}; src=${(qq)remote_stage}/payload;"'
+                if [ -e "$dst" ] || [ -L "$dst" ]; then exit 17; fi
+                if (set -C; : > "$dst") 2>/dev/null; then
+                    mv -f "$src" "$dst" && exit 0
+                    rm -f "$dst"
+                    exit 1
+                fi
+                if [ -e "$dst" ] || [ -L "$dst" ]; then exit 17; fi
+                exit 1'
+            result=$?
+            (( result == 0 )) && return 0
+            (( result == 17 )) || return 1
+        fi
+        (( ++copy_number ))
+        name="$stem ($copy_number)$extension"
+    done
+}
+
+integer completed=0 index=0
+failed_names=()
+for file in "${files[@]}"; do
+    (( ++index ))
+    # A successful download may be hard-linked into place. Each pull needs its own inode.
+    payload="$local_stage/payload-$index"
+    if transfer_file "$file"; then
+        (( ++completed ))
+        if (( $#files > 1 )); then print -r -- "phone：已保存到 $output"; fi
+    else
+        if (( $#files == 1 )); then fail "$reason"; fi
+        print -ru2 -- "phone：$reason"
+        failed_names+=("${file:t}")
+    fi
+    if [[ $mode == get ]]; then /bin/rm -f -- "$payload"; fi
 done
-report_success "已保存到 $output"
+
+if (( $#failed_names )); then
+    sample="${(j:、:)failed_names[1,3]}"
+    if (( $#failed_names > 3 )); then sample+=" 等"; fi
+    fail "已完成 $completed/$#files 个文件。失败 $#failed_names 个：$sample。"
+elif (( $#files == 1 )); then
+    report_success "已保存到 $output"
+else
+    report_success "已保存 $completed 个文件到 $destination"
+fi

@@ -1,14 +1,14 @@
 # phone-mirror
 
-`phone` 是一个 macOS Zsh 命令。连上 Android 手机后，在终端运行 `phone` 就能用 scrcpy 投屏。默认关闭手机实体屏幕，并在投屏期间保持唤醒。点一下投屏窗口，按 **⌘1** 回到手机主屏幕，按 **⌘2** 打开最近任务。
+`phone` 让你在 Mac 上用 scrcpy 控制 Android 手机，也能通过 ADB 批量收发文件。连上手机，在终端运行 `phone` 即可投屏。手机实体屏幕默认熄灭，投屏期间保持唤醒。在投屏窗口按 **⌘1** 回到手机主屏幕，按 **⌘2** 打开最近任务。
 
 ## 安装
 
-在已安装 Homebrew 和 Apple 命令行开发工具的 Mac 上，用有权访问本私有仓库的 GitHub SSH 密钥安装。Homebrew 会管理 `phone` 和 scrcpy，并在本机编译快捷键程序。
+在装有 Homebrew 和 Apple 命令行开发工具的 Mac 上运行下面的命令。Homebrew 从公开仓库获取源码，安装 scrcpy，并在本机编译投屏快捷键程序。首次使用和从旧 SSH 安装迁移都可以运行同一组命令。
 
 ```sh
-brew tap 2021dt/phone-mirror git@github.com:2021Dt/phone-mirror.git
-brew command trust >/dev/null 2>&1 && brew trust --formula 2021dt/phone-mirror/phone-mirror
+brew tap --custom-remote 2021dt/phone-mirror https://github.com/2021Dt/phone-mirror.git
+if brew command trust >/dev/null 2>&1; then brew trust --formula 2021dt/phone-mirror/phone-mirror; fi
 brew install 2021dt/phone-mirror/phone-mirror
 command -v adb >/dev/null || brew install --cask android-platform-tools
 phone -h
@@ -28,8 +28,8 @@ brew upgrade 2021dt/phone-mirror/phone-mirror
 | 命令 | 用途 |
 | --- | --- |
 | `phone` | 自动选择在线手机并投屏 |
-| `phone send` | 在 Mac 上选文件，发送到手机「下载」 |
-| `phone get` | 在窗口中浏览手机文件，选一个存到 Mac 的接收目录 |
+| `phone send` | 在 Mac 上选一个或多个文件，发送到手机「下载」 |
+| `phone get` | 浏览手机文件，将选中的文件保存到 Mac 的接收目录 |
 | `phone folder` | 选择并记住 Mac 上的接收目录 |
 | `phone list` | 查看连接状态和设备序列号 |
 | `phone usb` | 只用 USB 连接 |
@@ -43,11 +43,18 @@ brew upgrade 2021dt/phone-mirror/phone-mirror
 
 ### 传文件
 
-在投屏窗口内按 **⌘U**，从 Mac 选一个文件发到手机「下载」。按 **⌘D**，从这台手机选一个文件取回 Mac。要修改 Mac 的接收目录，按 **⌘,**（Command 加英文逗号），选一次即可记住。
+在投屏窗口内按 **⌘U**，从 Mac 选文件发到手机「下载」。按 **⌘D**，从手机选文件取回 Mac。在文件列表里按住 **⌘** 点选多个文件，或按住 **Shift** 连选一段，再确认传输。要修改 Mac 的接收目录，按 **⌘,**（Command 加英文逗号），选一次即可记住。
 
 手机连上后直接运行 `phone send` 或 `phone get` 即可，投屏窗口可以关着。`phone get` 从手机的「下载」开始。单击「上一级」或双击文件夹，路径和列表会在同一个窗口里更新。例如回到共享存储，再打开 `DCIM/Camera` 就能找相机照片。双击文件开始下载，按 Esc 取消。有多台手机时，用 `phone -s 序列号 get` 或 `phone -s 序列号 send` 选设备。
 
-也可以在终端输入 `phone send` 和一个空格，再将 Finder 里的文件拖进来并回车。如果知道手机「下载」里的文件名，直接运行 `phone get "报告.pdf"`。两边遇到同名文件都会保留两份，例如 `报告 (1).pdf`。
+也可以在终端输入 `phone send` 和一个空格，把 Finder 里选中的多个文件一起拖进来并回车。取回时可以一次给出多个手机文件名，默认从手机「下载」查找。两边遇到同名文件都会保留两份，例如 `报告 (1).pdf`。
+
+```sh
+phone send "周报.pdf" "现场照片.jpg"
+phone get "周报.pdf" "现场照片.jpg" --to ~/Desktop
+```
+
+批量传输会逐个处理文件。某个文件失败时，后续文件仍会继续，结束时会显示成功数量和失败项，方便单独重试。
 
 Mac 起初使用 `~/Downloads`。运行一次 `phone folder`，选好目录，以后 `phone get` 就存到那里。也可以直接指定已有目录，例如 `phone folder ~/Desktop`。临时保存到当前项目可用 `phone get --to .`，下次下载仍用常用目录。`phone folder --reset` 可恢复到 `~/Downloads`。发到手机的文件默认存入手机「下载」。
 

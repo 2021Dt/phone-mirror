@@ -1,9 +1,7 @@
 class PhoneMirror < Formula
   desc "Mirror Android devices and transfer files from macOS"
   homepage "https://github.com/2021Dt/phone-mirror"
-  url "ssh://git@github.com/2021Dt/phone-mirror.git",
-      tag:      "v0.1.0",
-      revision: "a8919bfb1fd0d9b1f6cb3e5ee2160c797d847745"
+  url "https://github.com/2021Dt/phone-mirror.git", tag: "v0.2.0"
 
   depends_on :macos
   depends_on "scrcpy"
