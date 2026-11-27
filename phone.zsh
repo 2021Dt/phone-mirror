@@ -6,16 +6,26 @@ function phone {
 
     local usage='用法：phone [投屏选项] | phone usb [序列号] [投屏选项]
       phone -s 序列号 [投屏选项] | phone list | phone update | phone -h
+      phone send [Mac文件] | phone get [手机文件] [--to Mac目录]（可在子命令前加 -s 序列号）
+      phone folder [Mac目录 | --reset]
       投屏选项：-S / --screen-off、--screen-on、--keyboard=sdk / --keyboard=uhid
                 --screen-off-timeout=秒数 或 --keep-active
       phone pair 地址:配对端口 | phone connect 地址:连接端口'
     local -a launch_options scrcpy_options
-    while [[ ${argv[-1]} == (-S|--screen-off|--screen-on|--keyboard=sdk|--keyboard=uhid|--screen-off-timeout=*|--keep-active) ]]; do
-        launch_options=("${argv[-1]}" "${launch_options[@]}")
-        shift -p
-    done
-
-    local mode=${1:-auto} requested= endpoint= endpoint_host adb_bin scrcpy_bin
+    local requested= endpoint= endpoint_host adb_bin scrcpy_bin
+    if [[ $1 == -s && -n $2 && $2 != -* && $3 == (send|get) ]]; then
+        requested=$2
+        shift 2
+    fi
+    if [[ $1 != (send|get|folder) ]]; then
+        while [[ ${argv[-1]} == (-S|--screen-off|--screen-on|--keyboard=sdk|--keyboard=uhid|--screen-off-timeout=*|--keep-active) ]]; do
+            launch_options=("${argv[-1]}" "${launch_options[@]}")
+            shift -p
+        done
+    fi
+    local mode=${1:-auto}
+    local script_file=${(%):-%x}
+    local script_dir=${script_file:A:h}
     if (( ${#launch_options} )) && [[ $mode != (auto|usb|-s) ]]; then
         print -ru2 -- "$usage"
         return 2
@@ -26,6 +36,9 @@ function phone {
 
 命令
   phone                             自动选手机，默认熄屏、不因空闲休眠、实体键盘
+  phone send                        在 Mac 上选一个文件，发送到手机「下载」
+  phone get                         从手机取文件，保存到选好的 Mac 目录（初始为「下载」）
+  phone folder                      为以后的下载选一个 Mac 文件夹，无需连接手机
   phone list                        查看 ADB 设备列表和序列号
   phone update                      通过 Homebrew 检查并更新 scrcpy，无需连接手机
   phone usb [序列号]                通过 USB 投屏，可指定手机
@@ -34,7 +47,16 @@ function phone {
   phone connect 地址:连接端口       手动连接已配对的手机
   phone -h                          显示本帮助
 
+更新 phone 本身
+  brew update && brew upgrade 2021dt/phone-mirror/phone-mirror
+
 常用示例（在终端输入）
+  phone send ~/Downloads/报告.pdf   直接发送文件，也可以输入 phone send 后拖入文件
+  phone get 报告.pdf                直接取回手机「下载」里的这个文件
+                                    传文件遇到同名时，新副本会自动加编号
+  phone get --to .                  只把这次选的文件存到当前目录
+  phone folder --reset              恢复 Mac 默认的「下载」目录
+  phone -s 序列号 get               指定要取文件的手机
   phone usb                         插线投屏，手机熄屏且不因空闲休眠
   phone --screen-on                 亮屏投屏，仍阻止空闲休眠
   phone usb --screen-on             USB 投屏，同时点亮手机屏幕
@@ -49,7 +71,9 @@ function phone {
 常用快捷键（先点击投屏窗口，Option 指左 Option）
   ⌘1  (Command+1)                  回到手机主屏幕
   ⌘2  (Command+2)                  打开最近任务，点击卡片即可切换 App
-  这两组键与 iPhone 镜像一致。切回其他 Mac 应用后，快捷键交回该应用。
+  ⌘U  (Command+U)                  从 Mac 选文件，发送到当前手机的「下载」
+  ⌘D  (Command+D)                  从当前手机选文件，取回 Mac
+  ⌘,  (Command+逗号)               选择并记住 Mac 接收文件的目录
   Option+O                         熄灭手机屏幕，继续投屏
   Option+Shift+O                   点亮手机屏幕
   Option+B                         返回上一页
@@ -127,6 +151,28 @@ function phone {
             fi ;;
         list)
             (( $# == 1 )) || { print -ru2 -- "$usage"; return 2; } ;;
+        folder)
+            (( $# <= 2 )) && [[ $# == 1 || -n $2 ]] || { print -ru2 -- "$usage"; return 2; }
+            shift
+            /bin/zsh -f "$script_dir/phone-transfer.zsh" folder "$@"
+            return $? ;;
+        send)
+            (( $# == 1 || $# == 2 )) && [[ $# == 1 || -n $2 ]] || { print -ru2 -- "$usage"; return 2; } ;;
+        get)
+            local get_file= get_folder=
+            shift
+            while (( $# )); do
+                if [[ $1 == --to ]]; then
+                    [[ -n $2 && -z $get_folder ]] || { print -ru2 -- '用法：phone get [手机文件] --to Mac目录'; return 2; }
+                    get_folder=$2
+                    shift 2
+                else
+                    [[ -n $1 && -z $get_file ]] || { print -ru2 -- "$usage"; return 2; }
+                    get_file=$1
+                    shift
+                fi
+            done
+            set -- "$mode" "$get_file" "$get_folder" ;;
         usb)
             [[ $# -le 2 && $2 != -* ]] || { print -ru2 -- "$usage"; return 2; }
             requested=$2 ;;
@@ -194,7 +240,7 @@ function phone {
 
     if (( ${#candidates} == 1 )); then
         target=$candidates[1]
-    elif [[ $mode == auto ]] && (( ${#candidates} == 2 && ${#usb_devices} == 1 && ${#wireless_devices} == 1 )); then
+    elif [[ $mode == (auto|send|get) ]] && (( ${#candidates} == 2 && ${#usb_devices} == 1 && ${#wireless_devices} == 1 )); then
         # A TCP endpoint and a USB serial may represent the same handset.
         if hardware_serial=$("$adb_bin" -s "$wireless_devices[1]" shell -T getprop ro.serialno 2>/dev/null) &&
             [[ ${hardware_serial%$'\r'} == "$usb_devices[1]" ]]; then
@@ -205,11 +251,19 @@ function phone {
     if [[ -z $target ]]; then
         if (( ${#candidates} == 0 )); then
             print -ru2 -- 'phone：没有符合条件的在线设备。请检查无线调试，或解锁手机并允许 USB 调试。'
+        elif [[ $mode == (send|get) ]]; then
+            print -ru2 -- "phone：有多台在线设备，请用 phone -s 序列号 $mode 指定手机。"
         else
             print -ru2 -- 'phone：无法唯一确定目标。请从下方复制序列号，运行 phone -s 序列号。'
         fi
         print -ru2 -- "$devices"
         return 1
+    fi
+
+    if [[ $mode == (send|get) ]]; then
+        shift
+        /bin/zsh -f "$script_dir/phone-transfer.zsh" "$mode" "$adb_bin" "$target" "$@"
+        return $?
     fi
 
     scrcpy_bin=$(whence -p scrcpy) || { print -ru2 -- 'phone：找不到 scrcpy。'; return 127; }
@@ -236,14 +290,13 @@ function phone {
         print -ru2 -- '  休眠：投屏期间阻止空闲休眠，退出投屏后结束。'
     fi
     print -ru2 -- '  手机被手动点亮后，按 Option+O 可重新熄屏，投屏会继续。
-  终端常用：phone usb / phone --screen-on / phone list / phone -h'
-    local script_file=${(%):-%x}
-    local hotkeys_bin=${script_file:A:h}/phone-hotkeys
+  文件：⌘U 发到手机 / ⌘D 取回 Mac / ⌘, 选择 Mac 保存目录'
+    local hotkeys_bin=$script_dir/phone-hotkeys
     (
         if [[ -x $hotkeys_bin ]]; then
             "$hotkeys_bin" "$adb_bin" "$target" </dev/null &!
         else
-            print -ru2 -- 'phone：找不到 phone-hotkeys，⌘1 和 ⌘2 暂不可用。'
+            print -ru2 -- 'phone：找不到 phone-hotkeys，投屏窗口的导航和文件快捷键暂不可用。'
         fi
         ADB="$adb_bin" exec "$scrcpy_bin" --serial="$target" "${scrcpy_options[@]}"
     )
