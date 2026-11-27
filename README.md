@@ -1,10 +1,10 @@
 # phone-mirror
 
-手机插上 Mac，终端里敲个 `phone`，就能用鼠标和键盘操作 Android。手机屏幕默认熄着，Mac 上照常用。投屏靠 scrcpy，传文件靠 adb。
+在 Mac 上控制 Android 手机，或批量收发文件。投屏使用 scrcpy，文件传输使用 adb，支持 USB 和 Wi-Fi。
 
 ## 安装
 
-Mac 上需要 Homebrew 和苹果的命令行开发工具。打开终端，运行下面几行。
+需要 Homebrew 和 Xcode 命令行工具。
 
 ```sh
 brew tap --custom-remote 2021dt/phone-mirror https://github.com/2021Dt/phone-mirror.git
@@ -15,39 +15,59 @@ brew install 2021dt/phone-mirror/phone-mirror
 command -v adb >/dev/null || brew install --cask android-platform-tools
 ```
 
-## 第一次投屏
+## 连接手机
 
-在手机的「开发者选项」里打开「USB 调试」，用数据线连上 Mac。解锁手机，看到「允许 USB 调试」时点允许，然后在终端运行 `phone`。
+1. 在手机的「开发者选项」中打开 **USB 调试**。
+2. 用数据线连接 Mac，解锁手机，点 **允许 USB 调试**。
+3. 在 Mac 终端运行 `phone`。投屏期间，手机屏幕默认熄灭，系统保持唤醒。需要亮屏投屏时，运行 `phone --screen-on`。
 
-点一下投屏窗口，按 `⌘1` 回手机桌面，按 `⌘2` 看最近用过的 App，按左 `Option+B` 返回上一页。想让手机也亮着屏，就用 `phone --screen-on` 启动。
+连接多台手机时，用 `phone list` 查看序列号，再用 `phone -s 序列号` 指定设备。
 
-连了好几台手机时，用 `phone list` 看序列号，再用 `phone -s 序列号` 选一台。中文输入用手机上的输入法，也可以在 Mac 上复制一段文字，按左 `Option+V` 粘贴到手机。
+<details>
+<summary>通过 Wi-Fi 连接（Android 11 及以上）</summary>
 
-## 传文件
+让手机和 Mac 接入同一个可信的 Wi-Fi，打开手机的「开发者选项 → 无线调试」。**配对端口**在「使用配对码配对设备」弹窗中，**连接端口**在「无线调试」主页面。
 
-- **Mac → 手机**　在投屏窗口按 `⌘U`，选好的文件会发到手机的「下载」。
-- **手机 → Mac**　按 `⌘D` 挑文件。找相机照片的话，从「下载」点「上一级」，再进 `DCIM/Camera`。取回的文件默认放在 Mac 的 `~/Downloads`。
-
-两边都能按住 `⌘` 点选多个文件，也能按住 Shift 连选。碰到重名的照片，第二份会存成 `照片 (1).jpg`。
-
-想换 Mac 上的保存位置，在投屏窗口按 `⌘,`，或在终端运行 `phone folder`。选一次就会记住。
-
-只传文件也可以直接用终端。先打 `phone send`，留个空格，把 Finder 里选好的文件一起拖进来，回车就发。取文件用 `phone get`，知道文件名就可以跳过选择窗口。
-
-```sh
-phone get 周报.pdf 照片.jpg --to ~/Desktop
+```mermaid
+flowchart TD
+    pair["运行 phone pair IP:配对端口<br/>输入手机显示的配对码"] --> devices{"phone list 能看到手机吗？"}
+    devices -->|能| start["运行 phone 开始投屏"]
+    devices -->|不能| connect["运行 phone connect IP:连接端口"]
+    connect --> start
 ```
 
-## 无线连接
+</details>
 
-Android 11 及以上可以走 Wi-Fi。让手机和 Mac 连上同一个可信的 Wi-Fi，在手机的「开发者选项 → 无线调试」里点「使用配对码配对设备」。
+## 窗口快捷键
 
-在 Mac 上运行 `phone pair IP:配对端口`，按提示输入手机上的配对码。然后用 `phone list` 看一眼。如果没出现这台手机，回到「无线调试」主页面，用那里显示的**连接端口**运行 `phone connect IP:连接端口`。连好以后，照常敲 `phone`。
+先点一下投屏窗口。
 
-## 更新
+| 按键 | 操作 |
+| --- | --- |
+| `⌘1` / `⌘2` | 回到手机桌面 / 打开最近使用的 App |
+| 左 `Option+B` | 返回上一页 |
+| 左 `Option+V` | 粘贴 Mac 剪贴板中的文字，也可用于输入中文 |
+| `⌘U` | 从 Mac 选文件，发送到手机的「下载」 |
+| `⌘D` | 从手机选文件，保存到 Mac，默认在 `~/Downloads` |
+| `⌘,` | 更改 Mac 接收文件的默认目录 |
+
+## 批量传文件
+
+<img src="docs/download-picker.png" width="520" alt="手机的下载目录中已选中「照片.jpg」和「周报.pdf」，右下角按钮显示「下载 2 项」。">
+
+- **多选**　按住 ⌘ 逐个点选，或按住 Shift 连选。图中点「下载 2 项」即可取回两个文件。上传时也可以多选。
+- **找照片**　下载窗口从手机的「下载」目录打开。点「上一级」，进入 `DCIM/Camera` 可找相机照片。
+- **重名文件**　自动保留两份，例如 `照片.jpg` 和 `照片 (1).jpg`。
+
+只传文件时，可以直接用终端。输入 `phone send` 并留一个空格，还可以把 Finder 中选好的文件拖进来。
 
 ```sh
-brew update && brew upgrade 2021dt/phone-mirror/phone-mirror
+phone send 周报.pdf 照片.jpg                # 发到手机的「下载」
+phone get 周报.pdf 照片.jpg --to ~/Desktop  # 从手机取回，存到 Mac 桌面
 ```
 
-单独更新 scrcpy 用 `phone update`。熄屏、休眠时间和其他快捷键可以查 `phone -h`。
+## 更新与帮助
+
+- 更新 phone-mirror　`brew update && brew upgrade 2021dt/phone-mirror/phone-mirror`
+- 单独更新 scrcpy　`phone update`
+- 查看所有选项和快捷键　`phone -h`
